@@ -27,6 +27,8 @@ Body: TypeAlias = (
     protocol.Host
     | protocol.Project
     | protocol.Notebook
+    | protocol.Document
+    | protocol.Cell
     | protocol.Runtime
     | protocol.Attachment
     | protocol.Run
@@ -43,6 +45,8 @@ Kind: TypeAlias = Literal[
     "host",
     "project",
     "notebook",
+    "document",
+    "cell",
     "runtime",
     "attachment",
     "run",

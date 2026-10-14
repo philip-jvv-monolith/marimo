@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import msgspec
@@ -23,30 +24,31 @@ from marimo._core.stream import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
+    from marimo._core.document import CellSource, Changed, Document
     from marimo._core.executions import Change
     from marimo._core.stream import Body
 
 
+@dataclass(eq=False)
 class Notebook:
-    """A notebook with execution results, a runtime, and client attachments.
+    """A document, its execution results, and the runtime that produces them.
 
-    Commands call the backend. Backend reports update state and reach
-    subscribers through notebook events. Change execution state through
-    the notebook so each change reaches subscribers.
+    Commands call the backend and publish changes to subscribers.
+    Change the document and executions through the notebook so each
+    change reaches subscribers.
     """
 
-    def __init__(
-        self, notebook_id: protocol.NotebookId, backend: be.Backend
-    ) -> None:
-        self._id = notebook_id
-        self._backend = backend
+    document: Document
+    executions: Executions
+    backend: be.Backend
+
+    def __post_init__(self) -> None:
         self._stream = Stream(history=0)
         self._closed = False
         self._runtime: protocol.Runtime | None = None
         self._attachments: dict[str, protocol.Attachment] = {}
-        self._executions = Executions()
         self._replacement: protocol.Runtime | None = None
         # Correlate runtime events with the pending start, stop, or restart.
         self._runtime_request: str | None = None
@@ -56,12 +58,8 @@ class Notebook:
         return self._stream.subscribe(listener)
 
     @property
-    def executions(self) -> Executions:
-        return self._executions
-
-    @property
     def id(self) -> protocol.NotebookId:
-        return self._id
+        return self.document.document.id
 
     @property
     def runtime(self) -> protocol.Runtime | None:
@@ -71,6 +69,42 @@ class Notebook:
     def _require_open(self) -> None:
         if self._closed:
             raise NotFound(f"no notebook {self.id}")
+
+    # ---- document ------------------------------------------------------
+
+    def replace(
+        self,
+        cells: Sequence[CellSource],
+        app_config: Mapping[str, object],
+        *,
+        request_id: str | None = None,
+    ) -> Changed:
+        """Replace the document and publish its changes."""
+        self._require_open()
+        changed = self.document.replace(cells, app_config)
+        self._publish_changed(changed, request_id)
+        return changed
+
+    def mark_saved(self, *, request_id: str | None = None) -> None:
+        """Mark the current document revision as saved."""
+        self._require_open()
+        document = self.document.mark_saved()
+        if document is not None:
+            self._publish(document, request_id)
+
+    def _publish_changed(
+        self, changed: Changed, request_id: str | None
+    ) -> None:
+        with self._stream.deferred():
+            for cell in changed.cells:
+                self._publish(cell, request_id)
+            for cell_id in changed.removed:
+                self._apply(
+                    self.executions.remove_cell(protocol.CellId(cell_id))
+                )
+                self._remove("cell", cell_id, request_id)
+            if changed.document is not None:
+                self._publish(changed.document, request_id)
 
     # ---- runtime -------------------------------------------------------
 
@@ -85,7 +119,7 @@ class Notebook:
             runtime = self._new_runtime("starting", None, None)
             self._runtime_request = request_id
             self._set_runtime(runtime)
-            self._backend.start(runtime.id)
+            self.backend.start(runtime.id)
             return runtime, True
 
     def stop(self, *, request_id: str | None = None) -> protocol.Runtime:
@@ -106,7 +140,7 @@ class Notebook:
             if runtime.status == "failed":
                 self._end_runtime()
             else:
-                self._backend.stop(runtime.id)
+                self.backend.stop(runtime.id)
             return terminating
 
     def restart(self, *, request_id: str | None = None) -> protocol.Runtime:
@@ -126,7 +160,7 @@ class Notebook:
             self._replacement = replacement
             terminating = replace(runtime, status="terminating")
             self._set_runtime(terminating)
-            self._backend.stop(runtime.id)
+            self.backend.stop(runtime.id)
             return replacement
 
     # TODO: Remove once sessions start their runtime through `start`.
@@ -193,7 +227,7 @@ class Notebook:
                 completed_at=None,
             )
             self._apply(self.executions.begin(run, request_id))
-            self._backend.run(run.id, code)
+            self.backend.run(run.id, code)
             return run
 
     def interrupt(self, run_id: str) -> protocol.Run:
@@ -204,7 +238,7 @@ class Notebook:
             raise NotFound(f"notebook {self.id} has no run {run_id}.")
         if run.status == "completed":
             raise Conflict(f"run {run_id} has already ended.")
-        self._backend.interrupt(run.id)
+        self.backend.interrupt(run.id)
         return run
 
     # ---- attachments ---------------------------------------------------
@@ -286,7 +320,7 @@ class Notebook:
                 self._end_runtime()
                 self._runtime_request = request_id
                 self._set_runtime(replacement)
-                self._backend.start(replacement.id)
+                self.backend.start(replacement.id)
         elif runtime.status == "terminating":
             self._end_runtime()
         else:
@@ -332,7 +366,7 @@ class Notebook:
 
     def _snapshot(self) -> list[Event]:
         """Return current state as events in dependency order."""
-        bodies: list[Body] = []
+        bodies: list[Body] = [*self.document.cells, self.document.document]
         if self._runtime is not None:
             bodies.append(self._runtime)
         bodies.extend(self._attachments.values())
@@ -396,7 +430,7 @@ class Notebook:
             for change in changes:
                 if isinstance(change, Released):
                     executions.release(change.run_id)
-                    self._backend.forget(change.run_id)
+                    self.backend.forget(change.run_id)
                     continue
                 run_id = executions.run_id_of(change)
                 request_id = executions.request_id(run_id)

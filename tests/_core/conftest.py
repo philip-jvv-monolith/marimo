@@ -6,6 +6,8 @@ from __future__ import annotations
 import pytest
 
 from marimo._core import backend as be, protocol
+from marimo._core.document import Document
+from marimo._core.executions import Executions
 from marimo._core.host import Host
 from marimo._core.notebook import Notebook
 from marimo._core.run_log import RetentionPolicy
@@ -69,18 +71,26 @@ def record(
 def make_notebook(
     record: protocol.Notebook,
     backend: ScriptedBackend | None = None,
+    *,
+    document: Document | None = None,
 ) -> Notebook:
-    return Notebook(record.id, backend or ScriptedBackend())
+    return Notebook(
+        document or Document(record.id, [], {}),
+        Executions(),
+        backend or ScriptedBackend(),
+    )
 
 
 async def add_notebook(
     host: Host,
     record: protocol.Notebook,
     backend: ScriptedBackend,
+    *,
+    document: Document | None = None,
 ) -> Notebook:
     host.add_notebook(
         record,
-        lambda current: make_notebook(current, backend),
+        lambda current: make_notebook(current, backend, document=document),
     )
     return await host.notebook(record.id)
 
