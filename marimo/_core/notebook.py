@@ -44,7 +44,8 @@ class NotebookSnapshot:
     """A document and its cells with their completed executions.
 
     Cells are in document order. Runtimes, attachments, and active work
-    are excluded.
+    are excluded. Restore with `Document.from_records` and
+    `Executions.restore` before constructing a notebook.
     """
 
     document: protocol.Document
@@ -55,6 +56,7 @@ class NotebookSnapshot:
 class Notebook:
     """A document, its execution results, and the runtime that produces them.
 
+    The document and cell results remain when the runtime stops.
     Commands call the backend and publish changes to subscribers.
     Change the document and executions through the notebook so each
     change reaches subscribers.
