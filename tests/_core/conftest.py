@@ -66,6 +66,25 @@ def record(
     )
 
 
+def make_notebook(
+    record: protocol.Notebook,
+    backend: ScriptedBackend | None = None,
+) -> Notebook:
+    return Notebook(record.id, backend or ScriptedBackend())
+
+
+async def add_notebook(
+    host: Host,
+    record: protocol.Notebook,
+    backend: ScriptedBackend,
+) -> Notebook:
+    host.add_notebook(
+        record,
+        lambda current: make_notebook(current, backend),
+    )
+    return await host.notebook(record.id)
+
+
 @pytest.fixture
 def host() -> Host:
     return Host(operations=OPERATIONS)
@@ -77,9 +96,9 @@ def backend() -> ScriptedBackend:
 
 
 @pytest.fixture
-def notebook(host: Host, backend: ScriptedBackend) -> Notebook:
+async def notebook(host: Host, backend: ScriptedBackend) -> Notebook:
     host.update_project(project())
-    return host.add_notebook(record(), backend)
+    return await add_notebook(host, record(), backend)
 
 
 @pytest.fixture
@@ -105,7 +124,7 @@ class Clock:
         return self.now
 
 
-def host_at(clock: Clock, history: int = 1000) -> tuple[Host, Notebook]:
+async def host_at(clock: Clock, history: int = 1000) -> tuple[Host, Notebook]:
     host = Host(
         operations=[],
         history=history,
@@ -113,7 +132,7 @@ def host_at(clock: Clock, history: int = 1000) -> tuple[Host, Notebook]:
         retention=RetentionPolicy(ephemeral_seconds=10),
     )
     host.update_project(project())
-    notebook = host.add_notebook(record(), ScriptedBackend())
+    notebook = await add_notebook(host, record(), ScriptedBackend())
     notebook.adopt(lambda _: None)
     notebook.observe(be.Running(runtime_id_of(notebook)))
     return host, notebook
